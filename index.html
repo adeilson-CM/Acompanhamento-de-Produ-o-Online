@@ -1058,7 +1058,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     o.cells = Array.isArray(d.cells) ? d.cells : [];
     o.cells.forEach(function (c) {
       c.name = c.name || "Célula"; c.status = NEXT[c.status] ? c.status : "run"; c.reason = c.reason || "";
-      c.mod = Math.max(0, Math.min(99, parseInt(c.mod, 10) || 0)); c.obs = c.obs || ""; c.maint = +c.maint || 0; c.since = +c.since || Date.now(); c.prod = Math.max(0, +c.prod || 0); c.pk = +c.pk || 0;
+      c.mod = Math.max(0, Math.min(99, parseInt(c.mod, 10) || 0)); c.obs = c.obs || ""; c.maint = +c.maint || 0; c.since = +c.since || Date.now(); c.prod = Math.max(0, +c.prod || 0); c.pk = +c.pk || 0; c.rv = Math.max(0, +c.rv || 0);
       if (!o.locals.some(function (l) { return l.id === c.localId; })) c.localId = o.locals[0].id;
     });
     o.layouts = (d.layouts && typeof d.layouts === "object") ? d.layouts : {};
@@ -1269,7 +1269,12 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   function anyOverlay() { return $maintOv.classList.contains("open") || $histOv.classList.contains("open") || $mgr.classList.contains("open") || $cellOv.classList.contains("open") || $reasonOv.classList.contains("open"); }
 
   /* ===== sincronização (Apps Script, somente GET) ===== */
-  var sync = { busy: false, timer: null, dirty: false, pend: {}, v: P.v };
+  var Q_KEY = DEV_KEY + "-q";
+  var sync = { busy: false, timer: null, dirty: false, pend: {}, v: P.v, fail: 0, boot: false };
+  // a fila de envio fica guardada no aparelho: se a internet cair ou a página for recarregada, nada se perde
+  (function () { var q = lsGet(Q_KEY); if (q) { sync.pend = q.pend || {}; sync.dirty = !!q.dirty; } })();
+  function saveQ() { lsSet(Q_KEY, { pend: sync.pend, dirty: sync.dirty }); }
+  function pendCount() { return Object.keys(sync.pend).length; }
   function syncOn() { return /^https?:\/\//.test(P.syncUrl || ""); }
   function api(qs) {
     var url = P.syncUrl + (P.syncUrl.indexOf("?") < 0 ? "?" : "&") + qs;
@@ -1283,17 +1288,19 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     var b = $("syncBadge");
     if (!syncOn()) { b.hidden = true; return; }
     b.hidden = false; b.className = "sync " + cls; b.textContent = txt;
+    if (cls === "ok") b.title = "Última sincronização: " + new Date().toLocaleTimeString("pt-BR");
   }
   function schedule(ms) { clearTimeout(sync.timer); sync.timer = setTimeout(flush, ms); }
   function queueCell(c) {
     if (!syncOn()) return;
     sync.pend[c.id] = { s: c.status, r: c.reason, m: c.mod, t: c.since, x: c.maint || 0 };
-    schedule(500);
+    saveQ(); schedule(500);
   }
-  function queueDoc() { if (!syncOn()) return; sync.dirty = true; schedule(3000); }
+  function queueDoc() { if (!syncOn()) return; sync.dirty = true; saveQ(); schedule(3000); }
   function touchCell(c) { saveDoc(); queueCell(c); }
   function touchDoc() { saveDoc(); queueDoc(); }
 
+  // envio do painel inteiro: pedaços em paralelo (4 por vez); o último vai sozinho, depois de todos os outros
   function pushDoc() {
     var text = JSON.stringify(D), parts = [], i = 0, end;
     while (i < text.length) {
@@ -1302,36 +1309,49 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       if (end < text.length && last >= 0xD800 && last <= 0xDBFF) end--;
       parts.push(text.slice(i, end)); i = end;
     }
-    var id = uid("p"), p = Promise.resolve(), resp = null;
-    parts.forEach(function (ch, k) {
-      p = p.then(function () {
-        setSync("", "Enviando " + (k + 1) + "/" + parts.length);
-        return api("action=put&id=" + id + "&i=" + k + "&n=" + parts.length + "&d=" + enc(ch));
-      }).then(function (j) { resp = j; });
+    var id = uid("p"), n = parts.length, done = 0, next = 0, ws = [], w;
+    function send(k) {
+      return api("action=put&id=" + id + "&i=" + k + "&n=" + n + "&d=" + enc(parts[k])).then(function (j) {
+        done++; setSync("", "Enviando " + done + "/" + n); return j;
+      });
+    }
+    function worker() { if (next >= n - 1) return Promise.resolve(); var k = next++; return send(k).then(worker); }
+    for (w = 0; w < 4; w++) ws.push(worker());
+    return Promise.all(ws).then(function () { return send(n - 1); }).then(function (j) {
+      if (!j || j.v == null) throw new Error("envio incompleto");
+      // kept > 0: o servidor manteve mudanças mais novas feitas em outro aparelho; o próximo poll baixa o painel atualizado
+      if (!j.kept) sync.v = j.v;
     });
-    return p.then(function () { if (resp && resp.v != null) sync.v = resp.v; });
   }
 
   function flush() {
     if (!syncOn()) return;
     if (sync.busy) { schedule(1000); return; }
     sync.busy = true; setSync("", "Enviando…");
-    var p = Promise.resolve();
-    if (sync.dirty) { sync.dirty = false; sync.pend = {}; p = pushDoc(); }
-    else {
-      Object.keys(sync.pend).forEach(function (id) {
-        var o = sync.pend[id];
-        p = p.then(function () {
-          delete sync.pend[id];
-          return api("action=upd&id=" + enc(id) + "&s=" + o.s + "&r=" + enc(o.r) + "&m=" + o.m + "&t=" + o.t + "&x=" + o.x).then(function (j) { if (j.pv == null || j.pv === sync.v) sync.v = j.v; });
+    var p = Promise.resolve(), pushing = false;
+    // 1) mudanças de status pendentes (uma por célula)
+    Object.keys(sync.pend).forEach(function (id) {
+      var o = sync.pend[id];
+      p = p.then(function () {
+        return api("action=upd&id=" + enc(id) + "&s=" + o.s + "&r=" + enc(o.r) + "&m=" + o.m + "&t=" + o.t + "&x=" + o.x).then(function (j) {
+          if (sync.pend[id] === o) delete sync.pend[id]; // só sai da fila depois que o servidor confirmou
+          saveQ();
+          var cc = findCell(id); if (cc && j.rv != null) cc.rv = j.rv;
+          if (j.pv == null || j.pv === sync.v) sync.v = j.v;
         });
       });
-    }
+    });
+    // 2) depois, o painel inteiro (nome, local, ordem...) se foi alterado
+    if (sync.dirty) p = p.then(function () { sync.dirty = false; pushing = true; saveQ(); return pushDoc().then(function () { pushing = false; }); });
     p.then(function () {
-      sync.busy = false; P.v = sync.v; saveDev(); setSync("ok", "Sincronizado");
-      if (sync.dirty || Object.keys(sync.pend).length) schedule(300);
+      sync.busy = false; sync.fail = 0; P.v = sync.v; saveDev(); saveDoc(); setSync("ok", "Sincronizado");
+      if (sync.boot) { sync.boot = false; pull(true).catch(function () {}); }
+      else if (sync.dirty || pendCount()) schedule(300);
     }).catch(function () {
-      sync.busy = false; sync.dirty = true; setSync("err", "Sem conexão. Tentando de novo"); schedule(15000);
+      sync.busy = false; if (pushing) sync.dirty = true; saveQ();
+      sync.fail = Math.min(sync.fail + 1, 5);
+      setSync("err", "Sem conexão. Tentando de novo");
+      schedule(Math.min(30000, 2000 * Math.pow(2, sync.fail - 1)));
     });
   }
 
@@ -1340,7 +1360,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     return api("action=ver").then(function (j) {
       if (!force && sync.v && j.v === sync.v) { setSync("ok", "Sincronizado"); return; }
       return api("action=get").then(function (g) {
-        if (!g.data) { sync.dirty = true; schedule(200); return; }
+        if (!g.data) { sync.dirty = true; saveQ(); schedule(200); return; }
         D = normalize(g.data); sync.v = g.v; P.v = g.v; saveDoc(); saveDev();
         setSync("ok", "Sincronizado"); renderAll();
         if ($mgr.classList.contains("open")) renderMgr(true);
@@ -1348,7 +1368,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     });
   }
   function poll() {
-    if (!syncOn() || sync.busy || sync.dirty || Object.keys(sync.pend).length || layoutMode || anyOverlay()) return;
+    if (!syncOn() || document.hidden || sync.busy || sync.dirty || pendCount() || layoutMode || anyOverlay()) return;
     pull(false).catch(function () { setSync("err", "Sem conexão"); });
   }
 
@@ -2708,10 +2728,17 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   setInterval(rotTick, 250);
   setInterval(tick, 30000);
   setInterval(tickMaint, 1000);
-  setInterval(poll, 8000);
+  setInterval(poll, 5000);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) poll(); });
+  window.addEventListener("online", function () { if (sync.dirty || pendCount()) schedule(200); poll(); });
   if (window.ResizeObserver) new ResizeObserver(function () { applyLayout(); }).observe($stage);
   else window.addEventListener("resize", applyLayout);
-  if (syncOn()) { setSync("", "Conectando…"); pull(true).catch(function () { setSync("err", "Sem conexão"); }); if (L.q.length) scheduleLog(2000); }
+  if (syncOn()) {
+    setSync("", "Conectando…");
+    if (sync.dirty || pendCount()) { sync.boot = true; schedule(300); }   // primeiro envia o que ficou pendente, depois baixa
+    else pull(true).catch(function () { setSync("err", "Sem conexão"); });
+    if (L.q.length) scheduleLog(2000);
+  }
 })();
 </script>
 </body>
