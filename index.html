@@ -444,6 +444,9 @@
   .roomy .prodl { display: inline; }
   body.day-past .prodc, body.day-future .prodc { display: none; }
   #prodTot { text-transform: none; }
+
+  .chk { display: flex; align-items: center; gap: 10px; margin: 6px 0 2px; font-size: .92rem; cursor: pointer; }
+  .chk input[type="checkbox"] { width: 20px; height: 20px; flex: none; }
 </style>
 </head>
 <body>
@@ -1045,6 +1048,15 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     if (c.status === "run") c.prod = (c.prod || 0) + Math.max(0, at - Math.max(c.since, W));
     c.status = to; c.since = at;
   }
+  // dia de produção: começa às DAY_START_H (06:00) e vai até as 06:00 do dia seguinte
+  // (usa sempre o fuso de Brasília, então funciona igual mesmo em aparelho com fuso errado)
+  function isoU(ms) { var d = new Date(ms); return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1) + "-" + pad(d.getUTCDate()); }
+  function shiftMs(t) { return t + TZ_H * 3600000 - DAY_START_H * 3600000; }
+  function todayIso() { return isoU(shiftMs(Date.now())); }
+  function dayOf(t) { return isoU(shiftMs(t)); }
+  function dayStartMs(day) { var q = String(day).split("-"); return Date.UTC(+q[0], +q[1] - 1, +q[2]) - TZ_H * 3600000 + DAY_START_H * 3600000; }
+  function dayEndMs(day) { return dayStartMs(iso(addDays(parseIso(day), 1))) - 1; }
+  function dayLabel(dl, year) { return parseIso(dl).toLocaleDateString("pt-BR", year ? { weekday: "long", day: "2-digit", month: "long", year: "numeric" } : { weekday: "long", day: "2-digit", month: "long" }); }
   function fmtProd(ms) { var m = Math.floor(ms / 60000); return Math.floor(m / 60) + "h" + pad(m % 60); }
   function fmtHours(ms) { return Math.floor(ms / 3600000) + "h"; }
   function sumProd(now) { var t = 0; scoped().forEach(function (c) { t += prodMs(c, now); }); return t; }
@@ -1065,6 +1077,9 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     o.order = (d.order && typeof d.order === "object") ? d.order : {};
     o.reasons = (Array.isArray(d.reasons) && d.reasons.length) ? d.reasons : DEFAULT_REASONS.slice();
     o.plans = (d.plans && typeof d.plans === "object") ? d.plans : {};
+    o.weekend = { on: !(d.weekend && d.weekend.on === false) };   // sábado e domingo em "Sem carga"; segunda volta a produzir
+    // último dia de produção cujo começo já foi aplicado (evita repetir a virada do dia)
+    o.applied = (typeof d.applied === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d.applied)) ? d.applied : iso(addDays(parseIso(todayIso()), -1));
     o.maintReasons = (Array.isArray(d.maintReasons) && d.maintReasons.length) ? d.maintReasons : DEFAULT_MAINT.slice();
     o.labels = { run: (d.labels && d.labels.run) || DEFAULT_LABELS.run, stop: (d.labels && d.labels.stop) || DEFAULT_LABELS.stop, off: (d.labels && d.labels.off) || DEFAULT_LABELS.off };
     if (o.labels.off === "Parada programada") o.labels.off = "Sem carga";
@@ -1205,7 +1220,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   }
 
   /* ===== registro de eventos (histórico) ===== */
-  var LOG_KEY = "painel-celulas-log-v3", LOG_MAX = 20000;
+  var LOG_KEY = "painel-celulas-log-v3", LOG_MAX = 5000;
   var L = lsGet(LOG_KEY) || {};
   L.ev = L.ev || []; L.names = L.names || {}; L.q = L.q || [];
   var modPend = {}, logBusy = false, logTimer = null;
@@ -1217,19 +1232,14 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     if (syncOn()) { L.q.push({ o: "log", e: e }); scheduleLog(800); }
     saveLog();
   }
-  function logStatus(c, from) { addEvent({ i: uid("e"), t: Date.now(), c: c.id, k: "s", s: c.status, f: from, r: c.reason || "", m: c.mod }); }
+  // id fixo = célula + instante da troca: qualquer aparelho (e o servidor) chega no mesmo registro, sem duplicar
+  function logStatus(c, from) { addEvent({ i: "s" + c.id + "_" + c.since, t: c.since, c: c.id, k: "s", s: c.status, f: from, r: c.reason || "", m: c.mod }); }
   function logReason(c) {
-    for (var i = L.ev.length - 1; i >= 0; i--) {
-      var e = L.ev[i];
-      if (e.c === c.id && e.k === "s") {
-        if (e.s === "stop" && e.r !== c.reason) {
-          e.r = c.reason;
-          if (syncOn()) { L.q.push({ o: "logr", i: e.i, t: e.t, r: e.r }); scheduleLog(800); }
-          saveLog();
-        }
-        return;
-      }
-    }
+    if (c.status !== "stop") return;
+    var id = "s" + c.id + "_" + c.since, lim = Math.max(0, L.ev.length - 400);
+    for (var i = L.ev.length - 1; i >= lim; i--) if (L.ev[i].i === id) { L.ev[i].r = c.reason; break; }
+    if (syncOn()) { L.q.push({ o: "logr", i: id, t: c.since, r: c.reason }); scheduleLog(800); }
+    saveLog();
   }
   function noteMod(c, from) {
     var p = modPend[c.id]; if (!p) p = modPend[c.id] = { f: from };
@@ -1243,14 +1253,39 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   function flushLog() {
     if (!syncOn() || logBusy || !L.q.length) return;
     logBusy = true;
-    var it = L.q[0], qs;
-    if (it.o === "log") {
-      var e = it.e, nm = L.names[e.c] || ["", ""];
-      qs = "action=log&i=" + enc(e.i) + "&t=" + e.t + "&c=" + enc(e.c) + "&n=" + enc(nm[0]) + "&l=" + enc(nm[1]) + "&k=" + e.k +
-           "&s=" + (e.s || "") + "&f=" + enc(e.f == null ? "" : e.f) + "&r=" + enc(e.r || "") + "&m=" + (e.m == null ? "" : e.m);
-    } else qs = "action=logr&i=" + enc(it.i) + "&t=" + it.t + "&r=" + enc(it.r);
-    api(qs).then(function () { L.q.shift(); saveLog(); logBusy = false; if (L.q.length) scheduleLog(50); })
-           .catch(function () { logBusy = false; scheduleLog(20000); });
+    var items = [], objs = [], len = 0, i, it, e, nm, o, l, qs;
+    // junta eventos seguidos em um só pedido (até ~1500 caracteres): a virada do dia gera dezenas de registros de uma vez
+    for (i = 0; i < L.q.length && objs.length < 12 && !sync.noLogb; i++) {
+      it = L.q[i]; if (it.o !== "log") break;
+      e = it.e; nm = L.names[e.c] || ["", ""];
+      o = { i: e.i, t: e.t, c: e.c, n: nm[0], l: nm[1], k: e.k, s: e.s || "", f: e.f == null ? "" : e.f, r: e.r || "", m: e.m == null ? "" : e.m };
+      l = enc(JSON.stringify(o)).length + 3;
+      if (objs.length && len + l > 1500) break;
+      items.push(it); objs.push(o); len += l;
+    }
+    if (objs.length > 1) qs = "action=logb&d=" + enc(JSON.stringify(objs));
+    else {
+      it = L.q[0]; items = [it];
+      if (it.o === "log") {
+        e = it.e; nm = L.names[e.c] || ["", ""];
+        qs = "action=log&i=" + enc(e.i) + "&t=" + e.t + "&c=" + enc(e.c) + "&n=" + enc(nm[0]) + "&l=" + enc(nm[1]) + "&k=" + e.k +
+             "&s=" + (e.s || "") + "&f=" + enc(e.f == null ? "" : e.f) + "&r=" + enc(e.r || "") + "&m=" + (e.m == null ? "" : e.m);
+      } else qs = "action=logr&i=" + enc(it.i) + "&t=" + it.t + "&r=" + enc(it.r);
+    }
+    api(qs).then(function () {
+      items.forEach(function (x) { var k = L.q.indexOf(x); if (k >= 0) L.q.splice(k, 1); }); // tira só o que foi enviado
+      saveLog(); logBusy = false; if (L.q.length) scheduleLog(50);
+    }).catch(function (err) {
+      logBusy = false;
+      if (err && err.server) {
+        if (items.length > 1) { sync.noLogb = true; scheduleLog(200); return; } // servidor antigo (sem "logb"): manda um por um
+        // o servidor recusou este item: ele não pode travar a fila dos outros
+        it = items[0]; it.fails = (it.fails || 0) + 1;
+        var k2 = L.q.indexOf(it); if (k2 >= 0) L.q.splice(k2, 1);
+        if (it.fails < 3) L.q.push(it);
+        saveLog(); scheduleLog(500);
+      } else scheduleLog(15000);
+    });
   }
 
   /* ===== elementos ===== */
@@ -1260,7 +1295,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   var $cellOv = $("cellOv"), $mgr = $("mgr"), $mgrBody = $("mgrBody"), $histOv = $("histOv"), $histRes = $("histRes"), $maintOv = $("maintOv");
 
   var layoutMode = false, sheetFor = null, editId = null, armed = null, armTimer = null, tab = "painel", mtId = null,
-      viewDay = iso(new Date()), curToday = iso(new Date()), followToday = true, VC = null;
+      viewDay = todayIso(), curToday = todayIso(), followToday = true, VC = null;
 
   function arm(key) {
     armed = key; clearTimeout(armTimer);
@@ -1280,9 +1315,15 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     var url = P.syncUrl + (P.syncUrl.indexOf("?") < 0 ? "?" : "&") + qs;
     var ctl = window.AbortController ? new AbortController() : null;
     var to = setTimeout(function () { if (ctl) ctl.abort(); }, 25000);
-    return fetch(url, ctl ? { signal: ctl.signal } : undefined)
+    var opts = {};
+    if (ctl) opts.signal = ctl.signal;
+    if (/^action=(upd|updm|log|logr)\b/.test(qs)) opts.keepalive = true; // termina de enviar mesmo se a página for fechada
+    return fetch(url, opts)
       .then(function (r) { clearTimeout(to); return r.json(); })
-      .then(function (j) { if (!j || !j.ok) throw new Error((j && j.error) || "resposta inválida"); return j; });
+      .then(function (j) {
+        if (!j || !j.ok) { var er = new Error((j && j.error) || "resposta inválida"); er.server = true; throw er; }
+        return j;
+      });
   }
   function setSync(cls, txt) {
     var b = $("syncBadge");
@@ -1291,13 +1332,13 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     if (cls === "ok") b.title = "Última sincronização: " + new Date().toLocaleTimeString("pt-BR");
   }
   function schedule(ms) { clearTimeout(sync.timer); sync.timer = setTimeout(flush, ms); }
-  function queueCell(c) {
+  function queueCell(c, auto) {
     if (!syncOn()) return;
-    sync.pend[c.id] = { s: c.status, r: c.reason, m: c.mod, t: c.since, x: c.maint || 0 };
+    sync.pend[c.id] = { s: c.status, r: c.reason, m: c.mod, t: c.since, x: c.maint || 0, b: auto ? 1 : 0 };
     saveQ(); schedule(500);
   }
   function queueDoc() { if (!syncOn()) return; sync.dirty = true; saveQ(); schedule(3000); }
-  function touchCell(c) { saveDoc(); queueCell(c); }
+  function touchCell(c, auto) { saveDoc(); queueCell(c, auto); }
   function touchDoc() { saveDoc(); queueDoc(); }
 
   // envio do painel inteiro: pedaços em paralelo (4 por vez); o último vai sozinho, depois de todos os outros
@@ -1324,31 +1365,56 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     });
   }
 
+  // agrupa as pendências (até ~1500 caracteres por pedido) para mandar várias células de uma vez
+  function pendGroups() {
+    var groups = [], cur = [], len = 0;
+    Object.keys(sync.pend).forEach(function (id) {
+      var o = sync.pend[id], base = { id: id, s: o.s, r: o.r, m: o.m, t: o.t, x: o.x, b: o.b || 0 };
+      var l = enc(JSON.stringify(base)).length + 3;
+      if (cur.length && len + l > 1500) { groups.push(cur); cur = []; len = 0; }
+      cur.push({ id: id, s: o.s, r: o.r, m: o.m, t: o.t, x: o.x, b: o.b || 0, o: o }); len += l;
+    });
+    if (cur.length) groups.push(cur);
+    return groups;
+  }
+  function gotUpd(it, rv) {
+    if (sync.pend[it.id] === it.o) delete sync.pend[it.id]; // só sai da fila depois que o servidor confirmou
+    var cc = findCell(it.id); if (cc && rv != null) cc.rv = rv;
+  }
+  function sendUpd(it) {
+    return api("action=upd&id=" + enc(it.id) + "&s=" + it.s + "&r=" + enc(it.r) + "&m=" + it.m + "&t=" + it.t + "&x=" + it.x + (it.b ? "&b=1" : "")).then(function (j) {
+      gotUpd(it, j.rv); if (j.pv == null || j.pv === sync.v) sync.v = j.v; saveQ();
+    });
+  }
+  function sendGroup(g) {
+    if (g.length === 1) return sendUpd(g[0]);
+    var arr = g.map(function (it) { return { id: it.id, s: it.s, r: it.r, m: it.m, t: it.t, x: it.x, b: it.b || 0 }; });
+    return api("action=updm&d=" + enc(JSON.stringify(arr))).then(function (j) {
+      g.forEach(function (it) { gotUpd(it, j.rvs ? j.rvs[it.id] : null); });
+      if (j.pv == null || j.pv === sync.v) sync.v = j.v; saveQ();
+    }, function (err) {
+      if (!(err && err.server)) throw err; // servidor antigo (sem "updm"): manda uma por uma
+      return g.reduce(function (p, it) { return p.then(function () { return sendUpd(it); }); }, Promise.resolve());
+    });
+  }
+
   function flush() {
     if (!syncOn()) return;
     if (sync.busy) { schedule(1000); return; }
     sync.busy = true; setSync("", "Enviando…");
     var p = Promise.resolve(), pushing = false;
-    // 1) mudanças de status pendentes (uma por célula)
-    Object.keys(sync.pend).forEach(function (id) {
-      var o = sync.pend[id];
-      p = p.then(function () {
-        return api("action=upd&id=" + enc(id) + "&s=" + o.s + "&r=" + enc(o.r) + "&m=" + o.m + "&t=" + o.t + "&x=" + o.x).then(function (j) {
-          if (sync.pend[id] === o) delete sync.pend[id]; // só sai da fila depois que o servidor confirmou
-          saveQ();
-          var cc = findCell(id); if (cc && j.rv != null) cc.rv = j.rv;
-          if (j.pv == null || j.pv === sync.v) sync.v = j.v;
-        });
-      });
-    });
+    // 1) mudanças de status pendentes
+    pendGroups().forEach(function (g) { p = p.then(function () { return sendGroup(g); }); });
     // 2) depois, o painel inteiro (nome, local, ordem...) se foi alterado
     if (sync.dirty) p = p.then(function () { sync.dirty = false; pushing = true; saveQ(); return pushDoc().then(function () { pushing = false; }); });
     p.then(function () {
       sync.busy = false; sync.fail = 0; P.v = sync.v; saveDev(); saveDoc(); setSync("ok", "Sincronizado");
       if (sync.boot) { sync.boot = false; pull(true).catch(function () {}); }
       else if (sync.dirty || pendCount()) schedule(300);
-    }).catch(function () {
-      sync.busy = false; if (pushing) sync.dirty = true; saveQ();
+    }).catch(function (err) {
+      sync.busy = false; if (pushing) sync.dirty = true;
+      if (err && /ainda não tem dados/.test(err.message || "")) { sync.pend = {}; sync.dirty = true; } // servidor vazio: primeiro o painel inteiro
+      saveQ();
       sync.fail = Math.min(sync.fail + 1, 5);
       setSync("err", "Sem conexão. Tentando de novo");
       schedule(Math.min(30000, 2000 * Math.pow(2, sync.fail - 1)));
@@ -1360,8 +1426,9 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     return api("action=ver").then(function (j) {
       if (!force && sync.v && j.v === sync.v) { setSync("ok", "Sincronizado"); return; }
       return api("action=get").then(function (g) {
-        if (!g.data) { sync.dirty = true; saveQ(); schedule(200); return; }
+        if (!g.data) { applyPlans(); sync.pend = {}; sync.dirty = true; saveQ(); schedule(200); return; } // o painel inteiro leva as mudanças
         D = normalize(g.data); sync.v = g.v; P.v = g.v; saveDoc(); saveDev();
+        applyPlans();
         setSync("ok", "Sincronizado"); renderAll();
         if ($mgr.classList.contains("open")) renderMgr(true);
       });
@@ -1831,6 +1898,9 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     });
     h.push('<div class="btns"><button class="btn" type="button" data-act="reset-colors">Restaurar cores padrão</button></div>');
 
+    h.push('<h3>Fim de semana</h3><p class="note">Sábado e domingo (às 06:00) todas as células vão para <b>' + esc(D.labels.off) + '</b> sozinhas. Na segunda, às 06:00, todas voltam a <b>' + esc(D.labels.run) + '</b>. Para hora extra, abra o dia em <b>Programação</b> (setas do dia, no topo) e toque nas células que vão produzir. Células em manutenção não mudam.</p>');
+    h.push('<label class="chk"><input type="checkbox" data-act="weekend"' + (D.weekend.on ? " checked" : "") + '> Sábado e domingo em ' + esc(D.labels.off) + ' automaticamente</label>');
+
     h.push('<h3>Motivos de parada</h3><p class="note">Um motivo por linha. Eles aparecem na lista ao pintar uma célula de vermelho.</p>');
     h.push('<textarea data-act="reasons" aria-label="Motivos">' + esc(D.reasons.join("\n")) + '</textarea>');
     h.push('<p class="note" style="margin-top:10px">Motivos que acionam a manutenção (luz pulsando e contagem de minutos). Um por linha.</p>');
@@ -1989,6 +2059,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       renderSummary(); renderGrid();
     }
     else if (act === "move-cell") { var c2 = findCell(id); if (c2) { c2.localId = t.value; touchDoc(); } }
+    else if (act === "weekend") { D.weekend.on = !!t.checked; touchDoc(); renderAll(); }
     else if (act === "mgr-filter") { P.filter = t.value; saveDev(); renderMgr(false); }
     else if (act === "restore-file") {
       var f = t.files && t.files[0]; if (!f) return;
@@ -2008,7 +2079,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   function parseIso(s) { var p = String(s).split("-"); return new Date(+p[0], +p[1] - 1, +p[2]); }
   function addDays(d, n) { var x = new Date(d.getTime()); x.setDate(x.getDate() + n); return x; }
   function startOfDay(d) { var x = new Date(d.getTime()); x.setHours(0, 0, 0, 0); return x; }
-  function lastDow(dow) { var d = startOfDay(new Date()); while (d.getDay() !== dow) d = addDays(d, -1); return d; }
+  function lastDow(dow) { var d = parseIso(todayIso()); while (d.getDay() !== dow) d = addDays(d, -1); return d; }
   function fmtDate(s) { var p = s.split("-"); return p[2] + "/" + p[1] + "/" + p[0]; }
   function weekday(s) { return parseIso(s).toLocaleDateString("pt-BR", { weekday: "long" }); }
   function dur(ms) {
@@ -2045,7 +2116,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
 
   function buildModel() {
     var end = Math.min(H.b, Date.now()), rows = H.rows.slice();
-    if (H.local !== "all") { var ln = findLocal(H.local); var nm = ln ? ln.name : ""; rows = rows.filter(function (r) { return r.l === nm; }); }
+    if (H.local !== "all") { var ln = findLocal(H.local); var nm = ln ? ln.name : ""; rows = rows.filter(function (r) { var cc = findCell(r.c); return cc ? cc.localId === H.local : r.l === nm; }); }
     rows.sort(function (x, y) { return x.t - y.t; });
 
     var byCell = {}, reasons = {}, cells = [], stops = 0, stopMs = 0, affected = 0;
@@ -2083,7 +2154,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   function mondayOf(d) { var x = startOfDay(d); return addDays(x, -((x.getDay() + 6) % 7)); }
 
   function renderWeek() {
-    var ws = H.week, today = startOfDay(new Date()), names = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"], h = [], i;
+    var ws = H.week, today = parseIso(todayIso()), names = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"], h = [], i;
     var fromD = parseIso(H.from), toD = parseIso(H.to);
     for (i = 0; i < 7; i++) {
       var d = addDays(ws, i), dis = d > today, act = d >= fromD && d <= toD, isT = d.getTime() === today.getTime();
@@ -2092,12 +2163,12 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     }
     $("histWeek").innerHTML = h.join("");
     $("wNext").disabled = addDays(ws, 7) > today;
-    $("histTrack").innerHTML = 'Acompanhando <b>' + esc(periodText()) + '</b><span class="hnote">Semana de ' + esc(fmtDate(iso(ws)).slice(0, 5)) + ' a ' + esc(fmtDate(iso(addDays(ws, 6))).slice(0, 5)) + '. O traço azul marca hoje.</span>';
+    $("histTrack").innerHTML = 'Acompanhando <b>' + esc(periodText()) + '</b><span class="hnote">Semana de ' + esc(fmtDate(iso(ws)).slice(0, 5)) + ' a ' + esc(fmtDate(iso(addDays(ws, 6))).slice(0, 5)) + '. O traço azul marca hoje. Cada dia vai das 06:00 às 06:00 do dia seguinte.</span>';
   }
 
   function loadHist() {
     H.week = mondayOf(parseIso(H.from)); renderWeek();
-    var a = startOfDay(parseIso(H.from)).getTime(), b = addDays(startOfDay(parseIso(H.to)), 1).getTime() - 1;
+    var a = dayStartMs(H.from), b = dayEndMs(H.to);
     H.a = a; H.b = b; H.msg = "";
     var req = ++H.req, local = localRows(a, b);
     if (!syncOn()) { H.rows = local; H.loading = false; buildModel(); renderHist(); return; }
@@ -2152,8 +2223,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       var LIMIT = 1500, day = "";
       h.push('<div class="tscroll"><table class="tbl"><thead><tr><th>Hora</th><th>Célula</th><th>Local</th><th>Evento</th><th>Motivo</th></tr></thead><tbody>');
       m.timeline.slice(0, LIMIT).forEach(function (e) {
-        var dl = iso(new Date(e.t));
-        if (dl !== day) { day = dl; h.push('<tr><td colspan="5" class="day">' + esc(new Date(e.t).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" })) + '</td></tr>'); }
+        var dl = dayOf(e.t);
+        if (dl !== day) { day = dl; h.push('<tr><td colspan="5" class="day">' + esc(dayLabel(dl)) + '</td></tr>'); }
         h.push('<tr><td class="num">' + hhmm(e.t) + '</td><td>' + esc(e.n) + '</td><td>' + esc(e.l) + '</td><td class="ev-' + (e.k === "s" ? e.s : e.k) + '">' + esc(evText(e, " → ")) + '</td><td>' + esc(evDetail(e)) + '</td></tr>');
       });
       h.push('</tbody></table></div>');
@@ -2173,7 +2244,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   }
 
   function setQuick(q) {
-    var today = startOfDay(new Date()), a, b, ws = H.week || mondayOf(today);
+    var today = parseIso(todayIso()), a, b, ws = H.week || mondayOf(today);
     if (q === "hoje") { a = b = today; }
     else if (q === "ontem") { a = b = addDays(today, -1); }
     else if (q === "fds") {
@@ -2186,7 +2257,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   }
 
   function openHist() {
-    if (!H.from) { H.from = H.to = iso(new Date()); }
+    if (!H.from) { H.from = H.to = todayIso(); }
     fillHistControls();
     $("shareBtn").hidden = !(navigator.share && typeof navigator.canShare === "function" && typeof File === "function");
     $histOv.classList.add("open"); $histOv.setAttribute("aria-hidden", "false");
@@ -2257,7 +2328,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       need(10, cols); y += 1.5;
       doc.setFillColor(240, 242, 244); doc.rect(M, y - 4, PW - 2 * M, 6, "F");
       doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(INK[0], INK[1], INK[2]);
-      doc.text(T(cap(new Date(t).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }))), M + 1.5, y);
+      doc.text(T(cap(dayLabel(dayOf(t), true))), M + 1.5, y);
       y += 6;
     }
 
@@ -2303,7 +2374,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       head(c3);
       var day = "";
       m.timeline.forEach(function (e) {
-        var dl = iso(new Date(e.t));
+        var dl = dayOf(e.t);
         if (dl !== day) { day = dl; dayRow(e.t, c3); }
         var col = e.k === "s" ? (e.s === "stop" ? RED : (e.s === "run" ? GRN : INK)) : ((e.k === "ma" || e.k === "mf") ? [178, 106, 0] : null);
         row(c3, [hhmm(e.t), e.n, e.l, evText(e, " > "), evDetail(e)], 3, col);
@@ -2421,7 +2492,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   $("tabs").addEventListener("click", function (e) { var b = e.target.closest("[data-tab]"); if (b) setTab(b.getAttribute("data-tab")); });
 
   function setMQuick(q) {
-    var today = startOfDay(new Date()), a, b = today;
+    var today = parseIso(todayIso()), a, b = today;
     if (q === "hoje") a = today;
     else if (q === "ontem") { a = b = addDays(today, -1); }
     else if (q === "sem") a = mondayOf(today);
@@ -2437,7 +2508,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     if (M.local !== "all" && !findLocal(M.local)) M.local = "all";
     $("mLocal").innerHTML = '<option value="all">Todos os locais</option>' + D.locals.map(function (l) { return '<option value="' + l.id + '">' + esc(l.name) + '</option>'; }).join("");
     $("mLocal").value = M.local; $("mFrom").value = M.from; $("mTo").value = M.to;
-    var a = startOfDay(parseIso(M.from)).getTime(), b = addDays(startOfDay(parseIso(M.to)), 1).getTime() - 1;
+    var a = dayStartMs(M.from), b = dayEndMs(M.to);
     M.a = a; M.b = b; M.msg = "";
     var req = ++M.req, local = localRows(a, b);
     function done(rows, msg) { if (req !== M.req) return; M.rows = rows; M.msg = msg || ""; M.loading = false; buildManut(); renderManut(); }
@@ -2453,7 +2524,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
 
   function buildManut() {
     var rows = M.rows.slice();
-    if (M.local !== "all") { var ln = findLocal(M.local), nm = ln ? ln.name : ""; rows = rows.filter(function (r) { return r.l === nm; }); }
+    if (M.local !== "all") { var ln = findLocal(M.local), nm = ln ? ln.name : ""; rows = rows.filter(function (r) { var cc = findCell(r.c); return cc ? cc.localId === M.local : r.l === nm; }); }
     rows.sort(function (x, y) { return x.t - y.t; });
     var sr = {}, stops = 0;
     rows.forEach(function (r) {
@@ -2471,7 +2542,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       acc(byCell, x.c, x.n + (x.l ? " (" + x.l + ")" : ""), x.min);
       acc(byLocal, x.l || "Sem local", x.l || "Sem local", x.min);
       acc(byReason, x.reason || "Não informado", x.reason || "Não informado", x.min);
-      acc(byDay, iso(new Date(x.t)), iso(new Date(x.t)), x.min);
+      acc(byDay, dayOf(x.t), dayOf(x.t), x.min);
     });
     function list(map) { return Object.keys(map).map(function (k) { return map[k]; }).sort(function (x, y) { return y.min - x.min || y.n - x.n; }); }
     var days = [], d = startOfDay(parseIso(M.from)), end = startOfDay(parseIso(M.to)), guard = 0;
@@ -2555,7 +2626,6 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   /* ===== dia em foco: hoje (ao vivo), futuro (programação) e passado (somente leitura) ===== */
   var PS = { day: "", st: null, loading: false, msg: "" }, psReq = 0, idleT = null, toastT = null;
 
-  function todayIso() { return iso(new Date()); }
   function isToday() { return viewDay === todayIso(); }
 
   function showToast(msg) {
@@ -2601,12 +2671,20 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     return st;
   }
 
+  // estado-base de cada dia de produção: fim de semana tudo em "Sem carga"; segunda tudo em "Produzindo"
+  function dayBase(day) {
+    if (!D.weekend || !D.weekend.on) return null;
+    var w = parseIso(day).getDay();
+    return (w === 6 || w === 0) ? "off" : (w === 1 ? "run" : null);
+  }
   function projectCell(c) {
-    var o = Object.assign({}, c, { maint: 0, _plan: false });
-    Object.keys(D.plans).filter(function (d) { return d <= viewDay; }).sort().forEach(function (d) {
-      var e = D.plans[d][c.id];
+    var o = Object.assign({}, c, { maint: 0, _plan: false }), d = addDays(parseIso(todayIso()), 1), di, b, e;
+    while ((di = iso(d)) <= viewDay) {
+      b = dayBase(di); if (b) { o.status = b; o.reason = ""; }
+      e = D.plans[di] && D.plans[di][c.id];
       if (e) { o.status = e.s; o.mod = e.m; o.reason = e.s === "stop" ? (e.r || "") : ""; }
-    });
+      d = addDays(d, 1);
+    }
     o._plan = !!(D.plans[viewDay] && D.plans[viewDay][c.id]);
     return o;
   }
@@ -2633,37 +2711,53 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     pd[id] = e; VC = null; touchDoc();
   }
 
-  // quando o dia programado chega, a programação vira o estado real (e some da lista)
-  function applyPlans() {
-    var t = todayIso(), days = Object.keys(D.plans || {}).filter(function (d) { return d <= t; }).sort();
-    if (!days.length) return false;
-    days.forEach(function (day) {
-      var at = startOfDay(parseIso(day)).getTime(), pd = D.plans[day];
-      Object.keys(pd).forEach(function (id) {
-        var c = findCell(id), e = pd[id]; if (!c) return;
-        var from = c.status, fm = c.mod;
-        if (from === "stop" && c.maint > 0 && e.s !== "stop") autoCloseMaint(c);
-        if (e.s !== from) setStatus(c, e.s, at);
-        c.reason = e.s === "stop" ? (e.r || "") : ""; c.mod = e.m;
-        if (from !== c.status) { addEvent({ i: uid("e"), t: at, c: c.id, k: "s", s: c.status, f: from, r: c.reason, m: c.mod }); }
-        if (fm !== c.mod) addEvent({ i: uid("e"), t: at, c: c.id, k: "m", f: fm, m: c.mod });
-        touchCell(c);
-      });
-      delete D.plans[day];
+  // começo de um dia de produção (06:00): aplica o estado-base do dia e, por cima, a programação dele
+  function applyDay(day) {
+    var at = dayStartMs(day), base = dayBase(day), pd = D.plans[day] || {};
+    D.cells.forEach(function (c) {
+      var e = pd[c.id], to = null, from = c.status, fm = c.mod, touched = false;
+      if (e) to = e.s;
+      else if (base && !(c.status === "stop" && c.maint > 0)) to = base; // célula em manutenção não é mexida
+      if (to == null) return;
+      if (from === "stop" && c.maint > 0 && to !== "stop") autoCloseMaint(c);
+      if (to !== from) {
+        setStatus(c, to, at); c.reason = (e && to === "stop") ? (e.r || "") : ""; touched = true;
+        addEvent({ i: "s" + c.id + "_" + at, t: at, c: c.id, k: "s", s: c.status, f: from, r: c.reason, m: e ? e.m : c.mod });
+      }
+      if (e) {
+        c.reason = e.s === "stop" ? (e.r || "") : ""; touched = true;
+        if (e.m !== fm) { c.mod = e.m; addEvent({ i: uid("e"), t: at, c: c.id, k: "m", f: fm, m: c.mod }); }
+      }
+      if (touched) touchCell(c, true);
     });
-    touchDoc();
+    delete D.plans[day];
+  }
+  // quando um dia de produção chega, ele passa a valer (dia por dia, se o painel ficou desligado)
+  function applyPlans() {
+    var t = todayIso();
+    if (!(D.applied < t)) return false;
+    var d = addDays(parseIso(D.applied), 1), lim = addDays(parseIso(t), -40);
+    if (d < lim) d = lim;
+    while (iso(d) <= t) { applyDay(iso(d)); d = addDays(d, 1); }
+    Object.keys(D.plans).forEach(function (k) { if (k <= t) delete D.plans[k]; });
+    D.applied = t; touchDoc();
     return true;
   }
 
   function updateDayUi() {
     var t = todayIso(), fut = viewDay > t, past = viewDay < t, inp = $("dayInput");
-    inp.min = iso(addDays(startOfDay(new Date()), -31)); inp.max = iso(addDays(startOfDay(new Date()), 90));
+    inp.min = iso(addDays(parseIso(todayIso()), -31)); inp.max = iso(addDays(parseIso(todayIso()), 90));
     inp.value = viewDay;
     $("dayToday").hidden = !(fut || past);
     $("dayPrev").disabled = viewDay <= inp.min; $("dayNext").disabled = viewDay >= inp.max;
     var long = cap(weekday(viewDay)) + ", " + fmtDate(viewDay);
     var txt = "";
-    if (fut) txt = 'Programando <b>' + esc(long) + '</b>. As mudanças entram em vigor nesse dia; hoje continua como está.';
+    if (fut) {
+      txt = 'Programando <b>' + esc(long) + '</b>. As mudanças entram em vigor nesse dia (às 06:00); hoje continua como está.';
+      var bs = dayBase(viewDay);
+      if (bs === "off") txt += " Fim de semana: todas as células começam em <b>" + esc(D.labels.off) + "</b>. Toque numa célula para programar hora extra.";
+      else if (bs === "run") txt += " Segunda: todas as células voltam a <b>" + esc(D.labels.run) + "</b>.";
+    }
     else if (past) txt = '<b>' + esc(long) + '</b> (dia passado): somente leitura. Mostra o estado ao fim do dia, conforme os registros.' + (PS.loading ? " Carregando…" : (PS.msg ? " " + esc(PS.msg) : ""));
     $("dayBannerText").innerHTML = txt;
     $("liveBadge").className = "live" + (fut ? " plan" : (past ? " past" : ""));
@@ -2677,7 +2771,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   }
 
   function setViewDay(day) {
-    var t = todayIso(), min = iso(addDays(startOfDay(new Date()), -31)), max = iso(addDays(startOfDay(new Date()), 90));
+    var t = todayIso(), min = iso(addDays(parseIso(todayIso()), -31)), max = iso(addDays(parseIso(todayIso()), 90));
     if (!day) day = t; if (day < min) day = min; if (day > max) day = max;
     viewDay = day; followToday = day === t; VC = null; psReq++;
     PS = { day: "", st: null, loading: false, msg: "" };
@@ -2688,7 +2782,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   }
 
   function loadPast() {
-    var day = viewDay, req = ++psReq, s = startOfDay(parseIso(day)).getTime(), E = addDays(startOfDay(parseIso(day)), 1).getTime() - 1;
+    var day = viewDay, req = ++psReq, s = dayStartMs(day), E = dayEndMs(day);
     PS = { day: day, st: null, loading: true, msg: "" };
     renderAll();
     fetchRows(s, Date.now(), function (rows, msg) {
@@ -2723,7 +2817,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   ["pointerdown", "keydown"].forEach(function (ev) { document.addEventListener(ev, function () { if (viewDay !== todayIso()) armIdle(); }, true); });
 
   /* ===== início ===== */
-  applyPlans(); renderAll(); tick(); setSync("", "");
+  if (!syncOn()) applyPlans();
+  renderAll(); tick(); setSync("", "");
   updateRotUi(); rotReset();
   setInterval(rotTick, 250);
   setInterval(tick, 30000);
@@ -2736,7 +2831,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   if (syncOn()) {
     setSync("", "Conectando…");
     if (sync.dirty || pendCount()) { sync.boot = true; schedule(300); }   // primeiro envia o que ficou pendente, depois baixa
-    else pull(true).catch(function () { setSync("err", "Sem conexão"); });
+    else pull(true).catch(function () { setSync("err", "Sem conexão"); if (applyPlans()) renderAll(); });
     if (L.q.length) scheduleLog(2000);
   }
 })();
