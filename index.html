@@ -414,6 +414,36 @@
   .rotbar { height: 2px; }
   .layoutbar { padding: 3px 10px; }
   .layoutbar span { font-size: .85rem; }
+
+  /* ===== celular: cabeçalho de uma linha; abas, dia e botões ficam no botão Menu ===== */
+  .menuBtn { display: none; }
+  @media (max-width: 700px) {
+    body { padding: 4px 6px; gap: 4px; }
+    .top { padding: 0 0 4px; gap: 4px 8px; }
+    .top::after { width: 80px; }
+    h1 { font-size: .95rem; letter-spacing: .05em; }
+    h1::before { height: .9em; margin-right: 6px; }
+    .clock { display: none; }
+    .live { font-size: .58rem; padding: 0 6px; }
+    .menuBtn { display: inline-flex; align-items: center; }
+    .top:not(.menu-open) .tabs, .top:not(.menu-open) .daynav { display: none; }
+    .top:not(.menu-open) .actions > *:not(.sync):not(.menuBtn) { display: none; }
+    .top.menu-open .actions { flex: 1 1 100%; }
+    .top.menu-open .tabs, .top.menu-open .daynav { flex: 1 1 auto; }
+    .fbar { gap: 3px; }
+    .fbar .summary, .statusf, .fbar .filters { flex: 1 1 100%; flex-wrap: nowrap; overflow-x: auto; margin-left: 0; scrollbar-width: none; }
+    .fbar .summary::-webkit-scrollbar, .statusf::-webkit-scrollbar { display: none; }
+    .pill, .chip { flex: 0 0 auto; }
+    .chip { min-height: 26px; padding: 1px 9px; font-size: .78rem; }
+    .layoutbar span { min-width: 0; flex-basis: 100%; }
+  }
+
+  /* ===== contador de horas produzidas no rodapé do card ===== */
+  .prodc { font-family: var(--mono); font-size: calc(var(--u) * .62); font-weight: 600; letter-spacing: .03em; white-space: nowrap; opacity: .95; }
+  .prodl { display: none; font-weight: 400; letter-spacing: .12em; opacity: .75; }
+  .roomy .prodl { display: inline; }
+  body.day-past .prodc, body.day-future .prodc { display: none; }
+  #prodTot { text-transform: none; }
 </style>
 </head>
 <body>
@@ -437,6 +467,7 @@
   </div>
   <div class="actions">
     <span class="sync" id="syncBadge" hidden></span>
+    <button class="btn menuBtn" id="menuBtn" type="button" aria-expanded="false" aria-controls="rot">Menu</button>
     <div class="rot" id="rot">
       <button class="btn" id="rotBtn" type="button" aria-pressed="false">Rodízio: desligado</button>
       <label class="rotsec">a cada <input id="rotSec" type="number" min="2" max="3600" step="1" inputmode="numeric" value="15" aria-label="Segundos em cada local"> s</label>
@@ -994,6 +1025,30 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     return "há " + Math.floor(m / 60) + "h" + pad(m % 60);
   }
 
+  /* ===== horas produzidas: dia de produção de 06:00 até 06:00 (zera sozinho todo dia às 06:00) ===== */
+  var DAY_START_H = 6;   // hora em que o dia de produção começa e o contador zera
+  var TZ_H = -3;         // fuso de Brasília (UTC-3, sem horário de verão)
+  function winStart(t) {
+    var off = TZ_H * 3600000, st = DAY_START_H * 3600000;
+    return Math.floor((t + off - st) / 86400000) * 86400000 + st - off;
+  }
+  // tempo em "Produzindo" dentro do dia de produção atual: o que já foi somado + o trecho em andamento
+  function prodMs(c, now) {
+    var W = winStart(now), ms = (c.pk === W) ? (c.prod || 0) : 0;
+    if (c.status === "run") ms += Math.max(0, now - Math.max(c.since, W));
+    return ms;
+  }
+  // toda mudança de status passa por aqui: fecha o trecho produzido e começa o novo
+  function setStatus(c, to, at) {
+    var W = winStart(at);
+    if (c.pk !== W) { c.pk = W; c.prod = 0; }
+    if (c.status === "run") c.prod = (c.prod || 0) + Math.max(0, at - Math.max(c.since, W));
+    c.status = to; c.since = at;
+  }
+  function fmtProd(ms) { var m = Math.floor(ms / 60000); return Math.floor(m / 60) + "h" + pad(m % 60); }
+  function fmtHours(ms) { return Math.floor(ms / 3600000) + "h"; }
+  function sumProd(now) { var t = 0; scoped().forEach(function (c) { t += prodMs(c, now); }); return t; }
+
   /* ===== dados ===== */
   function normalize(d) {
     d = d || {};
@@ -1003,7 +1058,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     o.cells = Array.isArray(d.cells) ? d.cells : [];
     o.cells.forEach(function (c) {
       c.name = c.name || "Célula"; c.status = NEXT[c.status] ? c.status : "run"; c.reason = c.reason || "";
-      c.mod = Math.max(0, Math.min(99, parseInt(c.mod, 10) || 0)); c.obs = c.obs || ""; c.maint = +c.maint || 0; c.since = +c.since || Date.now();
+      c.mod = Math.max(0, Math.min(99, parseInt(c.mod, 10) || 0)); c.obs = c.obs || ""; c.maint = +c.maint || 0; c.since = +c.since || Date.now(); c.prod = Math.max(0, +c.prod || 0); c.pk = +c.pk || 0;
       if (!o.locals.some(function (l) { return l.id === c.localId; })) c.localId = o.locals[0].id;
     });
     o.layouts = (d.layouts && typeof d.layouts === "object") ? d.layouts : {};
@@ -1017,22 +1072,112 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     return o;
   }
 
+  /* Células reais (origem: aba "Celulas" da planilha em 20/09/2026). Serve de ponto de partida em aparelho
+     novo; depois de conectado, a planilha é quem manda e este bloco deixa de ser usado. */
+  var SEED_CELLS = [["NVC MQB","PARCHOQUE NF",1,"cmu9vr1k2oue51",1789918380000],
+    ["NVC MQB","TRAVESSA TRASEIRA MQB",6,"cmu9vr1k2ttb02",1789911960000],
+    ["NVC MQB","TUNEL HATCH",3,"cmu9vr1k2mghg3",1789911720000],
+    ["NVC MQB","TUNEL SEDAN",2,"cmu9vr1k2q63a4",1789911480000],
+    ["NVC MQB","TRAVESSA T-CROSS",1,"cmu9vr1k2urwc5",1789911240000],
+    ["NVC MQB","PARACHOQUE GTS",5,"cmu9vr1k2me646",1789911000000],
+    ["NVC MQB","PARACHOQUE CUV",4,"cmu9vr1k2vd8q7",1789910760000],
+    ["NVC MQB","PARACHOQUE LAPA",4,"cmu9vr1k2lq6b8",1789910520000],
+    ["NVC MQB","ZP5",1,"cmu9vr1k2caca9",1789918380000],
+    ["NVC MQB","ZP7",1,"cmu9vr1k29cye10",1789910040000],
+    ["NVC MQB","MAPA",2,"cmu9vr1k2uw5a11",1789909800000],
+    ["NVC MQB","BOTIINHA",4,"cmu9vr1k2ykvc12",1789909560000],
+    ["NVC MQB","LANTERNA",1,"cmu9vr1k2c2p513",1789918380000],
+    ["NVC MQB","CHAPA DE FECHAMENTO",2,"cmu9vr1k2ix9r14",1789909080000],
+    ["NVC MQB","CADERINHA",3,"cmu9vr1k26v9315",1789908840000],
+    ["NVC MQB","PARACHOQUE TERA",5,"cmu9vr1k2o09q16",1789908600000],
+    ["NVC MQB","EIXO MQB37",3,"cmu9vr1k2i80117",1789908360000],
+    ["NVC HONDA","TRAVESSA CENTRAL 2TG",1,"cmu9vr1k29j8v18",1789918740000],
+    ["NVC HONDA","TRAVESSA CENTRAL 2GN",2,"cmu9vr1k2jx8g19",1789907880000],
+    ["NVC HONDA","LONGARINA 4D",3,"cmu9vr1k2xdg720",1789907640000],
+    ["NVC HONDA","FRAME SEM REFORÇO",3,"cmu9vr1k2oj1y21",1789907400000],
+    ["NVC HONDA","DRONE",2,"cmu9vr1k27qf722",1789907160000],
+    ["NVC HONDA","BIGODINHO",1,"cmu9vr1k2f4f623",1789906920000],
+    ["NVC HONDA","CONJUNTO SOLDADO",1,"cmu9vr1k20o5u24",1789906680000],
+    ["NVC HONDA","PSA",3,"cmu9vr1k2pt5n25",1789906440000],
+    ["NVC HONDA","TRAVESSE RDB",1,"cmu9vr1k2f8fe26",1789918740000],
+    ["NVC HONDA","SUPORTE PEDALEIRA RDB",1,"cmu9vr1k266o827",1789918740000],
+    ["NVC HONDA","REFORÇO RDB",1,"cmu9vr1k2rtuo28",1789905720000],
+    ["NVC HONDA","BOOMERANG TOY",2,"cmu9vr1k277p529",1789905480000],
+    ["NVC HONDA","BARRINHA TOY 360D",1,"cmu9vr1k25nkz30",1789905240000],
+    ["NVC HONDA","BARRINHA TOY 740D",2,"cmu9vr1k2nc3y31",1789905000000],
+    ["NVC HONDA","CAIXA D'AGUA +  PC TOY",3,"cmu9vr1k2wc1232",1789904760000],
+    ["NVC HONDA","CAIXA D'AGUA TOY",1,"cmu9vr1k2e8kb33",1789904520000],
+    ["NVC HONDA","CRASH BOX",3,"cmu9vr1k2m55134",1789904280000],
+    ["NAVE OESTE","QUADRO MQB I",9,"cmu9vr1k29vw435",1789904040000],
+    ["NAVE OESTE","QUADRO MQB II",10,"cmu9vr1k2bxqu36",1789913700000],
+    ["NAVE OESTE","LAGER BOCK",3,"cmu9vr1k2949j37",1789903560000],
+    ["NAVE OESTE","SOLDA BRAÇO MQB",2,"cmu9vr1k2fqvt38",1789903320000],
+    ["NAVE OESTE","MONTAGEM BRAÇO MQB",1,"cmu9vr1k2csxt39",1789913700000],
+    ["NAVE OESTE","QUADRO BCAR",15,"cmu9vr1k2gm9s40",1789902840000],
+    ["NAVE OESTE","QUADRO BSUV",9,"cmu9vr1k2ecgy41",1789902600000],
+    ["NAVE OESTE","SOLDA BRAÇO GEM",2,"cmu9vr1k2po2v42",1789902360000],
+    ["NAVE OESTE","MONTAGEM BRAÇO GEM",1,"cmu9vr1k2sje043",1789902120000],
+    ["MONTAGEM","FRAME 2GN",1,"cmu9vr1k2bt5l51",1789900200000],
+    ["MONTAGEM","CAIXA D'AGUA 2TG",1,"cmu9vr1k2r2iu52",1789918260000],
+    ["MONTAGEM","CAIXA D'AGUA 2GN",1,"cmu9vr1k2r0z853",1789899720000],
+    ["MONTAGEM","CRAVAMENTO TOY",1,"cmu9vr1k2qcjz54",1789918260000],
+    ["MONTAGEM","GOMA VELHA",1,"cmu9vr1k2kn0155",1789899240000],
+    ["MONTAGEM","GOMA NOVA",1,"cmu9vr1k29llp56",1789899000000],
+    ["MONTAGEM","GMI UHS",2,"cmu9vr1k2jh4w57",1789898760000],
+    ["MONTAGEM","GMI LHS",2,"cmu9vr1k21eqj58",1789898520000],
+    ["MONTAGEM","GSV",2,"cmu9vr1k2mxr059",1789898280000],
+    ["PINTURA","PINTURA",1,"cmu9vr1k22spe82",1789892760000],
+    ["HOT STAMPING","ROCKER INNER",4,"cmu9vr1k2n1mg83",1789892520000],
+    ["HOT STAMPING","ROCKER OUTER",1,"cmu9vr1k240z084",1789892280000],
+    ["HOT STAMPING","PATCHWORK VW",1,"cmu9vr1k20bi785",1789892040000],
+    ["HOT STAMPING","PATCHWORK PSA",1,"cmu9vr1k2ot9286",1789891800000],
+    ["HOT STAMPING","TRAVESSA PS05",2,"cmu9vr1k2vuho87",1789891560000],
+    ["HOT STAMPING","COLUNA A GEM",3,"cmu9vr1k2ba6s88",1789891320000],
+    ["HOT STAMPING","COLUNA B GEM",3,"cmu9vr1k29q7f89",1789891080000],
+    ["HOT STAMPING","SKI",2,"cmu9vr1k28sht90",1789919160000],
+    ["HOT STAMPING","COLUNA A GEM PU",1,"cmu9vr1k23cq891",1789919160000],
+    ["HOT STAMPING","COLUNA B GEM PU",1,"cmu9vr1k27sp292",1789890360000],
+    ["HOT STAMPING","BRACKET ROCKER INNER",1,"cmu9vr1k2gbwc93",1789890120000],
+    ["HOT STAMPING","COLUNA A MQB",4,"cmu9vr1k2lixt94",1789889880000],
+    ["HOT STAMPING","COLUNA B LE",2,"cmu9vr1k2c7bs95",1789889640000],
+    ["HOT STAMPING","COLUNA B LD",2,"cmu9vr1k25cmx96",1789889400000],
+    ["HOT STAMPING","SCANIA",2,"cmu9vr1k22f6o97",1789889160000],
+    ["ROLLFORMING","STAM I",1,"cmu9vr1k29fgu99",1789913820000],
+    ["ROLLFORMING","STAM II",1,"cmu9vr1k20oc4100",1789888440000],
+    ["ROLLFORMING","RLM",1,"cmu9vr1k2qjv2101",1789888200000],
+    ["ROLLFORMING","DALTEC",1,"cmu9vr1k2ozfa102",1789887960000],
+    ["ROLLFORMING","BENDER BCAR",1,"cmu9vr1k2kp40103",1789887720000],
+    ["ROLLFORMING","BENDER BSUV",1,"cmu9vr1k24mbi104",1789913820000],
+    ["ROLLFORMING","BENDER TOY",1,"cmu9vr1k2vg7o105",1789887240000],
+    ["ESTAMPARIA","2500  109",2,"cmu9vr1k26dgf122",1789883160000],
+    ["ESTAMPARIA","2500 111",2,"cmu9vr1k2uxfx123",1789882920000],
+    ["ESTAMPARIA","2500 125",2,"cmu9vr1k2a2mg124",1789882680000],
+    ["ESTAMPARIA","1600 110",2,"cmu9vr1k2lkfs125",1789882440000],
+    ["ESTAMPARIA","1250 106",2,"cmu9vr1k23gy3126",1789916040000],
+    ["ESTAMPARIA","800 115",2,"cmu9vr1k2qi54127",1789881960000],
+    ["ESTAMPARIA","400 101",2,"cmu9vr1k29x91128",1789881720000],
+    ["ESTAMPARIA","630 102",2,"cmu9vr1k2s3tb129",1789881480000],
+    ["ESTAMPARIA","BLAKLINE",2,"cmu9vr1k26aep130",1789916040000],
+    ["ESTAMPARIA","1000 TON NEW",2,"cmu9xtc5oslc2",1789916040000],
+    ["NAVE OESTE","SCANIA",3,"cmu9z17bhgyng",1789918080000],
+    ["NAVE OESTE","CONTROL ARM UHS",3,"cmu9z1j9myrsg",1789918080000],
+    ["NAVE OESTE","CONTROL ARM LHS",10,"cmu9z2fctqb53",1789918140000],
+    ["NAVE OESTE","PQ25",1,"cmu9z2ff2kq54",1789918140000],
+    ["NISSAN","CÉLULA A NISSAN",2,"cmu9zmlzhhi8i",1789919100000],
+    ["NISSAN","CÉLULA B NISSAN",2,"cmu9zmunazsnf",1789919100000],
+    ["NISSAN","CÉLULA C NISSAN",2,"cmu9zn0d85oe4",1789919100000],
+    ["NISSAN","CÉLULA D NISSAN",2,"cmu9zn467te3t",1789919100000],
+    ["NISSAN","ESTÁCIONARIA NISSAN",4,"cmu9zn7d3oezr",1789919100000],
+    ["HOT STAMPING","TB41 + FIAT",1,"cmua0h6318suv",1789920540000],
+    ["HOT STAMPING","CÉLULA FIAT",1,"cmua0hvm7h4dx",1789920540000]];
+
   function seed() {
-    var now = Date.now(), locals = [], cells = [], k = 0, i, j;
-    for (i = 1; i <= 8; i++) locals.push({ id: "l" + i, name: "Local " + i });
-    for (i = 0; i < 8; i++) {
-      var count = i < 2 ? 17 : 16;
-      for (j = 1; j <= count; j++) {
-        k++;
-        var st = k % 13 === 0 ? "stop" : (k % 9 === 0 ? "off" : "run"), mt = st === "stop" && k % 52 === 0;
-        cells.push({
-          id: uid("c") + k, localId: "l" + (i + 1),
-          name: (i === 0 && j === 1) ? "Cel. Travessa MQB" : "Cel. " + (i + 1) + "-" + pad(j),
-          status: st, reason: mt ? "Manutenção" : (st === "stop" ? DEFAULT_REASONS[k % DEFAULT_REASONS.length] : ""),
-          mod: st === "off" ? 0 : 2 + (k % 4), obs: "", maint: mt ? now - 17 * 60000 : 0, since: now - (k * 4 + 2) * 60000
-        });
-      }
-    }
+    var locals = [], seen = {}, cells = [];
+    SEED_CELLS.forEach(function (r) {
+      var lid = "l-" + r[0].toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      if (!seen[lid]) { seen[lid] = 1; locals.push({ id: lid, name: r[0] }); }
+      cells.push({ id: r[3], localId: lid, name: r[1], status: "run", reason: "", mod: r[2], obs: "", maint: 0, since: r[4] });
+    });
     return normalize({ locals: locals, cells: cells });
   }
 
@@ -1238,8 +1383,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   }
 
   function renderSummary() {
-    var n = { run: 0, stop: 0, off: 0 }, mod = 0, nm = 0;
-    scoped().forEach(function (c) { n[c.status]++; mod += c.mod; if (c.status === "stop" && c.maint > 0) nm++; });
+    var n = { run: 0, stop: 0, off: 0 }, mod = 0, nm = 0, pm = 0, now = Date.now(), today = viewDay === todayIso();
+    scoped().forEach(function (c) { n[c.status]++; mod += c.mod; if (c.status === "stop" && c.maint > 0) nm++; if (today) pm += prodMs(c, now); });
     var tot = n.run + n.stop + n.off, pct = tot ? Math.round(n.run / tot * 100) : 0;
     $("distBar").innerHTML = '<i class="run" style="flex:' + n.run + '"></i><i class="stop" style="flex:' + n.stop + '"></i><i class="off" style="flex:' + n.off + '"></i>';
     $summary.innerHTML =
@@ -1248,6 +1393,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       '<div class="pill"><i class="stop"></i><b>' + n.stop + '</b> ' + esc(D.labels.stop.toLowerCase()) + '</div>' +
       '<div class="pill"><i class="off"></i><b>' + n.off + '</b> ' + esc(D.labels.off.toLowerCase()) + '</div>' +
       '<div class="pill"><b>' + mod + '</b> MOD</div>' +
+      (today ? '<div class="pill" title="Soma das horas produzidas hoje (dia de produção: 06:00 até 06:00)"><b id="prodTot">' + fmtHours(pm) + '</b> produzidas</div>' : "") +
       (nm ? '<div class="pill"><i class="dot maint pulse"></i><b>' + nm + '</b> em manutenção</div>' : "");
   }
 
@@ -1261,9 +1407,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       '<button class="toggle" type="button" data-act="cycle" data-id="' + c.id + '">' +
         '<span class="name">' + esc(c.name) + '</span>' + status +
         (c.obs ? '<span class="obs">' + esc(c.obs) + '</span>' : "") +
-        '<span class="since" data-since="' + c.since + '">' + ago(c.since) + '</span>' +
       '</button>' + reason +
-      '<div class="foot"><span class="modlabel">MOD</span><output>' + c.mod + '</output></div></article>';
+      '<div class="foot"><span class="modlabel">MOD</span><span class="prodc" title="Horas produzidas hoje (dia de produção: 06:00 até 06:00)"><span class="prodl">PROD </span><span data-prodid="' + c.id + '">' + fmtProd(prodMs(c, Date.now())) + '</span></span><output>' + c.mod + '</output></div></article>';
   }
 
   /* --- posições --- */
@@ -1368,6 +1513,9 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     $clock.textContent = d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" }) + " · " + d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
     var els = $canvas.querySelectorAll("[data-since]");
     for (var i = 0; i < els.length; i++) els[i].textContent = ago(Number(els[i].getAttribute("data-since")));
+    var now = Date.now(), pe = $canvas.querySelectorAll("[data-prodid]"), k, cc, pt = $("prodTot");
+    for (k = 0; k < pe.length; k++) { cc = findCell(pe[k].getAttribute("data-prodid")); if (cc) pe[k].textContent = fmtProd(prodMs(cc, now)); }
+    if (pt) pt.textContent = fmtHours(sumProd(now));
   }
 
   /* ===== modo layout: arrastar e redimensionar ===== */
@@ -1531,6 +1679,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   $("rotBtn").addEventListener("click", function () { P.rot.on = !P.rot.on; saveDev(); rotReset(); updateRotUi(); });
   $("rotSec").addEventListener("change", function () { P.rot.sec = parseInt(this.value, 10); P.rot.sec = rotSecs(); saveDev(); this.value = P.rot.sec; rotReset(); });
   $("rotSec").addEventListener("keydown", function (e) { if (e.key === "Enter") this.blur(); });
+  $("menuBtn").addEventListener("click", function () {
+    var open = document.querySelector(".top").classList.toggle("menu-open");
+    this.setAttribute("aria-expanded", open ? "true" : "false"); this.textContent = open ? "Fechar" : "Menu";
+  });
   // mexeu na tela: espera o tempo todo de novo antes de trocar de local
   ["pointerdown", "keydown"].forEach(function (ev) { document.addEventListener(ev, function () { if (rotOn()) rotReset(); }, true); });
 
@@ -1551,7 +1703,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     if (act === "cycle") {
       if (c.maint > 0 && c.status === "stop") { openMaintDialog(c.id); return; }
       var from = c.status;
-      c.status = NEXT[c.status]; c.reason = ""; c.since = Date.now();
+      setStatus(c, NEXT[c.status], Date.now()); c.reason = "";
       logStatus(c, from); touchCell(c); renderAll();
       if (c.status === "stop") openSheet(c.id);
     } else if (act === "reason") openSheet(c.id);
@@ -1616,14 +1768,14 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     if (id === "ceName") c.name = e.target.value.trim() || "Célula";
     else if (id === "ceLocal") c.localId = e.target.value;
     else if (id === "ceStatus") {
-      if (e.target.value !== c.status) { if (e.target.value !== "stop" && c.maint > 0) autoCloseMaint(c); var fs = c.status; c.status = e.target.value; c.since = Date.now(); if (c.status !== "stop") c.reason = ""; logStatus(c, fs); }
+      if (e.target.value !== c.status) { if (e.target.value !== "stop" && c.maint > 0) autoCloseMaint(c); var fs = c.status; setStatus(c, e.target.value, Date.now()); if (c.status !== "stop") c.reason = ""; logStatus(c, fs); }
     }
     else if (id === "ceReason") { c.reason = e.target.value.trim(); logReason(c); if (isMaintReason(c.reason)) startMaint(c); }
     else if (id === "ceMod") { var fm = c.mod; c.mod = Math.max(0, Math.min(99, parseInt(e.target.value, 10) || 0)); noteMod(c, fm); }
     else if (id === "ceObs") c.obs = e.target.value.trim();
     else if (id === "ceMaint") {
       if (e.target.checked) {
-        if (c.status !== "stop") { var fs2 = c.status; c.status = "stop"; c.since = Date.now(); c.reason = ""; logStatus(c, fs2); }
+        if (c.status !== "stop") { var fs2 = c.status; setStatus(c, "stop", Date.now()); c.reason = ""; logStatus(c, fs2); }
         if (!c.reason) { c.reason = D.maintReasons[0]; logReason(c); }
         startMaint(c);
       } else if (c.maint > 0) { openMaintDialog(c.id); }
@@ -1778,7 +1930,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     } else if (act === "import") { if (armed === "import") doImport(); else { arm("import"); renderMgr(true); } }
     else if (act === "reset") {
       var now = Date.now();
-      D.cells.forEach(function (c) { if (c.status !== "run") { var f = c.status; if (c.maint > 0) autoCloseMaint(c); c.status = "run"; c.reason = ""; c.since = now; logStatus(c, f); } });
+      D.cells.forEach(function (c) { if (c.status !== "run") { var f = c.status; if (c.maint > 0) autoCloseMaint(c); setStatus(c, "run", now); c.reason = ""; logStatus(c, f); } });
       touchDoc(); say("Todas as células em produção.");
     } else if (act === "reset-colors") { D.colors = null; touchDoc(); applyTheme(); renderMgr(true); }
     else if (act === "export") { download("painel-celulas-backup.json", JSON.stringify(D, null, 1)); say("Backup baixado."); }
@@ -2191,7 +2343,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     if (!(start > 0)) return;
     c.maint = 0;
     addEvent({ i: uid("e"), t: now, c: c.id, k: "mf", f: start, m: o.min, r: o.note || "", s: o.to || c.status });
-    if (o.to === "run") { var from = c.status; c.status = "run"; c.reason = ""; c.since = now; logStatus(c, from); }
+    if (o.to === "run") { var from = c.status; setStatus(c, "run", now); c.reason = ""; logStatus(c, from); }
     touchCell(c);
   }
   function autoCloseMaint(c) {
@@ -2471,8 +2623,9 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
         var c = findCell(id), e = pd[id]; if (!c) return;
         var from = c.status, fm = c.mod;
         if (from === "stop" && c.maint > 0 && e.s !== "stop") autoCloseMaint(c);
-        c.status = e.s; c.reason = e.s === "stop" ? (e.r || "") : ""; c.mod = e.m;
-        if (from !== c.status) { c.since = at; addEvent({ i: uid("e"), t: at, c: c.id, k: "s", s: c.status, f: from, r: c.reason, m: c.mod }); }
+        if (e.s !== from) setStatus(c, e.s, at);
+        c.reason = e.s === "stop" ? (e.r || "") : ""; c.mod = e.m;
+        if (from !== c.status) { addEvent({ i: uid("e"), t: at, c: c.id, k: "s", s: c.status, f: from, r: c.reason, m: c.mod }); }
         if (fm !== c.mod) addEvent({ i: uid("e"), t: at, c: c.id, k: "m", f: fm, m: c.mod });
         touchCell(c);
       });
