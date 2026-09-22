@@ -447,6 +447,14 @@
 
   .chk { display: flex; align-items: center; gap: 10px; margin: 6px 0 2px; font-size: .92rem; cursor: pointer; }
   .chk input[type="checkbox"] { width: 20px; height: 20px; flex: none; }
+
+  /* ===== aba Peças ===== */
+  #viewPecas { overflow-y: auto; padding-bottom: 24px; }
+  #viewPecas textarea { width: 100%; box-sizing: border-box; font-family: var(--mono); }
+  #pRes .pph { width: 5.5em; min-width: 0; padding: 3px 6px; text-align: right; font-family: var(--mono); }
+  .tbl td.loss { color: var(--stop); }
+  .tbl td.good { color: var(--run); }
+  .tbl tr.tot td { font-weight: 700; border-top: 2px solid var(--line); }
 </style>
 </head>
 <body>
@@ -461,6 +469,7 @@
   <div class="tabs" id="tabs" role="tablist" aria-label="Abas">
     <button class="tab active" type="button" role="tab" data-tab="painel">Painel</button>
     <button class="tab" type="button" role="tab" data-tab="manut">Manutenção<span class="badge" id="maintBadge" hidden></span></button>
+    <button class="tab" type="button" role="tab" data-tab="pecas">Peças</button>
   </div>
   <div class="daynav" id="daynav" aria-label="Dia em foco">
     <button class="btn wnav" id="dayPrev" type="button" aria-label="Dia anterior">‹</button>
@@ -521,6 +530,32 @@
     <label>Local<select id="mLocal"></select></label>
   </div>
   <div id="mRes"></div>
+</section>
+
+<!-- aba peças: horas x peças por hora -->
+<section class="view" id="viewPecas" hidden>
+  <div class="qr">
+    <button class="btn" type="button" data-pq="hoje">Hoje</button>
+    <button class="btn" type="button" data-pq="ontem">Ontem</button>
+  </div>
+  <div class="hfilters">
+    <label>Dia de produção<input type="date" id="pDay"></label>
+    <label>Local<select id="pLocal"></select></label>
+    <label>Ordenar por<select id="pSort">
+      <option value="cell">Ordem do painel</option><option value="loss">Maior perda</option><option value="eff">Menor eficiência</option>
+    </select></label>
+  </div>
+  <div class="qr">
+    <button class="btn" type="button" id="pImpBtn">Importar peças por hora</button>
+    <button class="btn" type="button" id="pCsv">Baixar CSV</button>
+  </div>
+  <div id="pImpBox" hidden>
+    <p class="note">Cole uma linha por célula (dá para copiar direto do Excel): <b>Local;Célula;Peças por hora</b> ou só <b>Célula;Peças por hora</b>. Ex.: <b>ROLLFORMING;STAM I;60</b></p>
+    <textarea id="pImp" rows="5" spellcheck="false" placeholder="ROLLFORMING;STAM I;60"></textarea>
+    <div class="qr"><button class="btn primary" type="button" id="pImpGo">Aplicar</button><button class="btn" type="button" id="pImpCancel">Cancelar</button></div>
+    <p class="hnote" id="pImpMsg"></p>
+  </div>
+  <div id="pRes"></div>
 </section>
 
 <!-- motivo da parada -->
@@ -1070,7 +1105,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     o.cells = Array.isArray(d.cells) ? d.cells : [];
     o.cells.forEach(function (c) {
       c.name = c.name || "Célula"; c.status = NEXT[c.status] ? c.status : "run"; c.reason = c.reason || "";
-      c.mod = Math.max(0, Math.min(99, parseInt(c.mod, 10) || 0)); c.obs = c.obs || ""; c.maint = +c.maint || 0; c.since = +c.since || Date.now(); c.prod = Math.max(0, +c.prod || 0); c.pk = +c.pk || 0; c.rv = Math.max(0, +c.rv || 0);
+      c.mod = Math.max(0, Math.min(99, parseInt(c.mod, 10) || 0)); c.obs = c.obs || ""; c.maint = +c.maint || 0; c.since = +c.since || Date.now(); c.prod = Math.max(0, +c.prod || 0); c.pk = +c.pk || 0; c.rv = Math.max(0, +c.rv || 0); c.pph = Math.max(0, +c.pph || 0);
       if (!o.locals.some(function (l) { return l.id === c.localId; })) c.localId = o.locals[0].id;
     });
     o.layouts = (d.layouts && typeof d.layouts === "object") ? d.layouts : {};
@@ -1592,7 +1627,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     applyLayout();
   }
 
-  function renderAll() { VC = null; applyTheme(); renderFilters(); renderSummary(); renderGrid(); updateMaintBadge(); updateDayUi(); if (tab === "manut") renderManut(); }
+  function renderAll() { VC = null; applyTheme(); renderFilters(); renderSummary(); renderGrid(); updateMaintBadge(); updateDayUi(); if (tab === "manut") renderManut(); if (tab === "pecas" && !(document.activeElement && document.activeElement.className === "pph")) { buildPecas(); renderPecas(); } }
 
   function tick() {
     checkRollover();
@@ -2483,10 +2518,11 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     if (t === tab) return;
     if (layoutMode) setLayoutMode(false);
     tab = t;
-    document.body.classList.toggle("tab-manut", t === "manut");
-    $("viewPainel").hidden = t !== "painel"; $("viewManut").hidden = t !== "manut";
+    document.body.classList.toggle("tab-manut", t !== "painel");
+    $("viewPainel").hidden = t !== "painel"; $("viewManut").hidden = t !== "manut"; $("viewPecas").hidden = t !== "pecas";
     [].forEach.call($("tabs").querySelectorAll(".tab"), function (b) { b.classList.toggle("active", b.getAttribute("data-tab") === t); });
     if (t === "manut") { if (!M.from) setMQuick("7"); else loadManut(); }
+    else if (t === "pecas") setPDay(PC.day || todayIso());
     else renderAll();
   }
   $("tabs").addEventListener("click", function (e) { var b = e.target.closest("[data-tab]"); if (b) setTab(b.getAttribute("data-tab")); });
@@ -2622,6 +2658,167 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   $("mTo").addEventListener("change", function () { if (!this.value) return; M.to = this.value; if (M.to < M.from) { M.from = M.to; $("mFrom").value = M.from; } loadManut(); });
   $("mLocal").addEventListener("change", function () { M.local = this.value; buildManut(); renderManut(); });
   $("mRes").addEventListener("click", function (e) { var b = e.target.closest("[data-mclose]"); if (b) openMaintDialog(b.getAttribute("data-mclose")); });
+
+  /* ===== aba Peças: horas x peças por hora ===== */
+  // Realizado = peças/hora x horas produzindo. Meta = peças/hora x (horas produzindo + horas paradas):
+  // "Sem carga" não entra na meta. Perda = peças/hora x horas paradas.
+  var PC = { day: "", local: "all", sort: "cell", rows: [], loading: false, msg: "", req: 0, model: null };
+  function nfP(n) { return Math.round(n).toLocaleString("pt-BR"); }
+  function hhmmBR(t) { var d = new Date(t + TZ_H * 3600000); return pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes()); }
+
+  function setPDay(day) {
+    var t = todayIso(), min = iso(addDays(parseIso(t), -31));
+    if (!day || day > t) day = t; if (day < min) day = min;
+    PC.day = day; $("pDay").min = min; $("pDay").max = t;
+    loadPecas(false);
+  }
+
+  function loadPecas(silent) {
+    if (PC.local !== "all" && !findLocal(PC.local)) PC.local = "all";
+    if (!silent) {
+      $("pLocal").innerHTML = '<option value="all">Todos os locais</option>' + D.locals.map(function (l) { return '<option value="' + l.id + '">' + esc(l.name) + '</option>'; }).join("");
+      $("pLocal").value = PC.local; $("pSort").value = PC.sort; $("pDay").value = PC.day;
+      PC.loading = true; renderPecas();
+    }
+    var req = ++PC.req;
+    fetchRows(dayStartMs(PC.day), Date.now() + 1000, function (rows, msg) {
+      if (req !== PC.req) return;
+      PC.rows = rows; PC.msg = msg || ""; PC.loading = false;
+      if (document.activeElement && document.activeElement.className === "pph") return; // não atrapalha quem está digitando
+      buildPecas(); renderPecas();
+    });
+  }
+
+  function buildPecas() {
+    var S = dayStartMs(PC.day), E = Math.min(dayEndMs(PC.day), Date.now()), byCell = {}, cells = [];
+    var tot = { run: 0, stop: 0, off: 0, real: 0, meta: 0, loss: 0, rated: 0 };
+    PC.rows.forEach(function (r) { if (r.k === "s" && r.t >= S) (byCell[r.c] = byCell[r.c] || []).push(r); });
+    D.cells.forEach(function (c) {
+      if (PC.local !== "all" && c.localId !== PC.local) return;
+      var ev = (byCell[c.id] || []).sort(function (x, y) { return x.t - y.t; }), ms = { run: 0, stop: 0, off: 0 }, cur = S, i;
+      // estado no começo do dia = o "de" do primeiro registro depois dele (sem registro, vale o estado atual)
+      var st = (ev.length && ms[ev[0].f] != null) ? ev[0].f : c.status;
+      for (i = 0; i < ev.length; i++) {
+        if (ev[i].t >= E) break;
+        if (ev[i].t > cur) { ms[st] += ev[i].t - cur; cur = ev[i].t; }
+        if (ms[ev[i].s] != null) st = ev[i].s;
+      }
+      if (E > cur) ms[st] += E - cur;
+      var rh = ms.run / 3600000, sh = ms.stop / 3600000, rate = c.pph || 0;
+      var o = { c: c, run: ms.run, stop: ms.stop, off: ms.off, rate: rate, real: 0, meta: 0, loss: 0, eff: null };
+      if (rate > 0) { o.real = rh * rate; o.meta = (rh + sh) * rate; o.loss = sh * rate; o.eff = o.meta > 0 ? o.real / o.meta : null; tot.real += o.real; tot.meta += o.meta; tot.loss += o.loss; tot.rated++; }
+      tot.run += ms.run; tot.stop += ms.stop; tot.off += ms.off;
+      cells.push(o);
+    });
+    PC.model = { cells: cells, tot: tot, S: S, E: E };
+  }
+
+  function pecasSorted() {
+    var a = PC.model.cells.slice();
+    if (PC.sort === "loss") a.sort(function (x, y) { return y.loss - x.loss; });
+    else if (PC.sort === "eff") a.sort(function (x, y) { return (x.eff == null ? 2 : x.eff) - (y.eff == null ? 2 : y.eff); });
+    return a;
+  }
+
+  function renderPecas() {
+    var h = [], m = PC.model, isToday = PC.day === todayIso();
+    h.push('<p class="note">Dia de produção <b>' + esc(fmtDate(PC.day)) + '</b> (' + esc(weekday(PC.day)) + '), das 06:00 às 06:00' + (isToday ? ' — contando até agora (' + hhmmBR(Date.now()) + ')' : '') + '.</p>');
+    if (PC.msg) h.push('<p class="msg" style="color:var(--stop)">' + esc(PC.msg) + '</p>');
+    if (PC.loading || !m) { h.push('<p class="note">Carregando…</p>'); $("pRes").innerHTML = h.join(""); return; }
+    var t = m.tot, eff = t.meta > 0 ? t.real / t.meta : null;
+    h.push('<div class="kpis">' +
+      '<div class="kpi"><b>' + nfP(t.real) + '</b><span>peças realizadas</span></div>' +
+      '<div class="kpi"><b>' + nfP(t.meta) + '</b><span>meta (sem paradas)</span></div>' +
+      '<div class="kpi"><b>' + nfP(t.loss) + '</b><span>peças perdidas</span></div>' +
+      '<div class="kpi"><b>' + (eff == null ? "-" : Math.round(eff * 100) + "%") + '</b><span>eficiência</span></div>' +
+      '<div class="kpi"><b>' + fmtMin(t.run / 60000) + '</b><span>horas produzindo</span></div>' +
+      '<div class="kpi"><b>' + fmtMin(t.stop / 60000) + '</b><span>horas paradas</span></div></div>');
+    if (!t.rated) h.push('<p class="note">Informe as <b>peças por hora</b> de cada célula na coluna "Peças/h" (ou use "Importar peças por hora") para calcular.</p>');
+    h.push('<div class="tscroll"><table class="tbl"><thead><tr><th>Local</th><th>Célula</th><th>Peças/h</th><th>Produzindo</th><th>Parada</th><th>' + esc(D.labels.off) + '</th><th>Realizado</th><th>Meta</th><th>Perda</th><th>Efic.</th></tr></thead><tbody>');
+    pecasSorted().forEach(function (o) {
+      var c = o.c, l = findLocal(c.localId), has = o.rate > 0;
+      h.push('<tr><td>' + esc(l ? l.name : "") + '</td><td>' + esc(c.name) + '</td>' +
+        '<td class="num"><input class="pph" type="text" inputmode="decimal" data-pph="' + c.id + '" value="' + (c.pph || "") + '" placeholder="0" aria-label="Peças por hora de ' + esc(c.name) + '"></td>' +
+        '<td class="num">' + fmtMin(o.run / 60000) + '</td><td class="num">' + fmtMin(o.stop / 60000) + '</td><td class="num">' + fmtMin(o.off / 60000) + '</td>' +
+        '<td class="num">' + (has ? nfP(o.real) : "-") + '</td><td class="num">' + (has ? nfP(o.meta) : "-") + '</td>' +
+        '<td class="num' + (has && o.loss >= 0.5 ? " loss" : "") + '">' + (has ? nfP(o.loss) : "-") + '</td>' +
+        '<td class="num' + (o.eff != null ? (o.eff >= 0.9 ? " good" : (o.eff < 0.7 ? " loss" : "")) : "") + '">' + (o.eff == null ? "-" : Math.round(o.eff * 100) + "%") + '</td></tr>');
+    });
+    h.push('<tr class="tot"><td colspan="3">Total</td><td class="num">' + fmtMin(t.run / 60000) + '</td><td class="num">' + fmtMin(t.stop / 60000) + '</td><td class="num">' + fmtMin(t.off / 60000) + '</td>' +
+      '<td class="num">' + nfP(t.real) + '</td><td class="num">' + nfP(t.meta) + '</td><td class="num">' + nfP(t.loss) + '</td><td class="num">' + (eff == null ? "-" : Math.round(eff * 100) + "%") + '</td></tr>');
+    h.push('</tbody></table></div>');
+    h.push('<p class="hnote">Realizado = peças/hora × horas produzindo. Meta = peças/hora × (horas produzindo + horas paradas), ou seja, o que a célula faria sem nenhuma parada. ' +
+           esc(D.labels.off) + ' não entra na meta. Perda = peças/hora × horas paradas (inclui manutenção). Só entram nos totais as células com peças por hora preenchida.</p>');
+    $("pRes").innerHTML = h.join("");
+  }
+
+  function parseRate(v) {
+    v = String(v == null ? "" : v).replace(/\s/g, "");
+    if (!v) return 0;
+    if (v.indexOf(",") >= 0) v = v.replace(/\./g, "").replace(",", ".");
+    else if (/^\d{1,3}(\.\d{3})+$/.test(v)) v = v.replace(/\./g, ""); // 1.200 = mil e duzentas
+    var n = parseFloat(v);
+    return n > 0 ? Math.round(n * 100) / 100 : 0;
+  }
+  function normName(x) { return String(x || "").toUpperCase().replace(/\s+/g, " ").trim(); }
+
+  function importRates(text) {
+    var ok = 0, multi = 0, miss = [];
+    String(text || "").split(/\r?\n/).forEach(function (ln) {
+      if (!ln.trim()) return;
+      var f = ln.split(/\t|;/).map(function (x) { return x.trim(); }).filter(function (x, i, a) { return !(x === "" && i === a.length - 1); });
+      if (f.length < 2) { miss.push(ln.trim()); return; }
+      var rate = parseRate(f[f.length - 1]), name = normName(f[f.length - 2]), loc = f.length >= 3 ? normName(f[f.length - 3]) : "";
+      if (!(rate > 0) || !name) { miss.push(ln.trim()); return; }
+      var hits = D.cells.filter(function (c) {
+        if (normName(c.name) !== name) return false;
+        if (!loc) return true;
+        var l = findLocal(c.localId); return l && normName(l.name) === loc;
+      });
+      if (!hits.length) { miss.push(ln.trim()); return; }
+      if (hits.length > 1) multi++;
+      hits.forEach(function (c) { c.pph = rate; ok++; });
+    });
+    if (ok) touchDoc();
+    return { ok: ok, multi: multi, miss: miss };
+  }
+
+  function csvPecas() {
+    if (!PC.model) return;
+    var q = function (x) { x = String(x == null ? "" : x); return /[;"\n]/.test(x) ? '"' + x.replace(/"/g, '""') + '"' : x; };
+    var mm = function (ms) { return fmtMin(ms / 60000); };
+    var lines = [["Local", "Célula", "Peças/h", "Produzindo", "Parada", D.labels.off, "Realizado", "Meta", "Perda", "Eficiência"].join(";")];
+    pecasSorted().forEach(function (o) {
+      var l = findLocal(o.c.localId), has = o.rate > 0;
+      lines.push([q(l ? l.name : ""), q(o.c.name), o.rate || "", mm(o.run), mm(o.stop), mm(o.off), has ? Math.round(o.real) : "", has ? Math.round(o.meta) : "", has ? Math.round(o.loss) : "", o.eff == null ? "" : Math.round(o.eff * 100) + "%"].join(";"));
+    });
+    var blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" }), a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = "pecas_" + PC.day + ".csv";
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  document.querySelector('[data-pq="hoje"]').addEventListener("click", function () { setPDay(todayIso()); });
+  document.querySelector('[data-pq="ontem"]').addEventListener("click", function () { setPDay(iso(addDays(parseIso(todayIso()), -1))); });
+  $("pDay").addEventListener("change", function () { if (this.value) setPDay(this.value); });
+  $("pLocal").addEventListener("change", function () { PC.local = this.value; buildPecas(); renderPecas(); });
+  $("pSort").addEventListener("change", function () { PC.sort = this.value; renderPecas(); });
+  $("pCsv").addEventListener("click", csvPecas);
+  $("pImpBtn").addEventListener("click", function () { $("pImpBox").hidden = !$("pImpBox").hidden; $("pImpMsg").textContent = ""; });
+  $("pImpCancel").addEventListener("click", function () { $("pImpBox").hidden = true; });
+  $("pImpGo").addEventListener("click", function () {
+    var r = importRates($("pImp").value), msg = r.ok + " célula(s) atualizada(s)" + (r.multi ? " (" + r.multi + " linha(s) valem para mais de uma célula com o mesmo nome; use a coluna Local para separar)" : "") + ".";
+    if (r.miss.length) msg += " Não encontrei: " + r.miss.slice(0, 8).join(" | ") + (r.miss.length > 8 ? " …" : "");
+    $("pImpMsg").textContent = msg; if (r.ok) { $("pImp").value = ""; buildPecas(); renderPecas(); }
+  });
+  $("pRes").addEventListener("change", function (e) {
+    var t = e.target, id = t.getAttribute && t.getAttribute("data-pph"); if (!id) return;
+    var c = findCell(id); if (!c) return;
+    c.pph = parseRate(t.value); touchDoc(); buildPecas(); renderPecas();
+  });
+  $("pRes").addEventListener("keydown", function (e) { if (e.key === "Enter" && e.target.className === "pph") e.target.blur(); });
+  // hoje: atualiza os números a cada minuto
+  setInterval(function () { if (tab === "pecas" && PC.day === todayIso() && !document.hidden && !anyOverlay()) loadPecas(true); }, 60000);
 
   /* ===== dia em foco: hoje (ao vivo), futuro (programação) e passado (somente leitura) ===== */
   var PS = { day: "", st: null, loading: false, msg: "" }, psReq = 0, idleT = null, toastT = null;
